@@ -1,0 +1,726 @@
+<!DOCTYPE html>
+<html lang="sl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>PERILO POD NADZOROM</title>
+<style>
+  /* Brez zunanjih virov: cel slog je tukaj. */
+  html, body { margin:0; height:100%; overflow:hidden; background:#0b1020;
+               touch-action:none; -webkit-user-select:none; user-select:none; }
+  canvas { display:block; position:fixed; inset:0; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+"use strict";
+/* =========================================================================
+   PERILO POD NADZOROM — komična igra sortiranja perila (vanilla JS + Canvas).
+   Vse je v eni datoteki. Moduli so označeni z velikimi naslovi spodaj:
+   STANJE, ZVOK, VNOS, IGRA, IZRIS, ZANKA.
+   ========================================================================= */
+
+/* ---- Osnova platna in logičnih dimenzij ---------------------------------
+   Risemo v logičnem koordinatnem sistemu LW x LH; ob izrisu to skaliramo
+   na zaslon (ohranjamo razmerje, centriramo, upoštevamo devicePixelRatio). */
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+const LW = 480, LH = 800;                 // logična širina/višina
+const view = { scale:1, ox:0, oy:0, dpr:1, vw:0, vh:0 };
+
+function resize(){
+  const dpr = window.devicePixelRatio || 1;
+  const vw = window.innerWidth, vh = window.innerHeight;
+  view.dpr = dpr; view.vw = vw; view.vh = vh;
+  canvas.style.width = vw + 'px';
+  canvas.style.height = vh + 'px';
+  canvas.width  = Math.floor(vw * dpr);
+  canvas.height = Math.floor(vh * dpr);
+  view.scale = Math.min(vw / LW, vh / LH);
+  view.ox = (vw - LW * view.scale) / 2;
+  view.oy = (vh - LH * view.scale) / 2;
+}
+window.addEventListener('resize', resize);
+resize();
+
+/* Pretvori zaslonsko točko (clientX/Y) v logične koordinate. */
+function toLogical(cx, cy){
+  const r = canvas.getBoundingClientRect();
+  return { x:(cx - r.left - view.ox) / view.scale,
+           y:(cy - r.top  - view.oy) / view.scale };
+}
+
+/* Drobni pomočniki */
+const rand  = (a,b)=> a + Math.random()*(b-a);
+const randi = (a,b)=> Math.floor(rand(a,b+1));
+const pick  = arr => arr[(Math.random()*arr.length)|0];
+const clamp = (v,a,b)=> v<a?a : v>b?b : v;
+const hit   = (p,r)=> p.x>=r.x && p.x<=r.x+r.w && p.y>=r.y && p.y<=r.y+r.h;
+
+/* =========================================================================
+   STANJE
+   ========================================================================= */
+
+// Kategorije perila: barva ploščice koša in barva siju (glow) okoli kosa.
+const KAT = {
+  BELO:       { ime:'BELO',       barva:'#bcdcff', glow:'#dff0ff' },
+  BARVNO:     { ime:'BARVNO',     barva:'#ff8a3d', glow:'#ffc06a' },
+  OBCUTLJIVO: { ime:'OBČUTLJIVO', barva:'#c77dff', glow:'#e8c2ff' },
+};
+const BASKETS = ['BELO','BARVNO','OBCUTLJIVO']; // vrstni red menjave koša (1/2/3)
+
+// Predloge perila (emoji + prava kategorija).
+const PERILO = [
+  { e:'👕', k:'BELO' }, { e:'🩲', k:'BELO' }, { e:'🧦', k:'BELO' }, { e:'🦺', k:'BELO' },
+  { e:'👗', k:'BARVNO' }, { e:'👚', k:'BARVNO' }, { e:'👖', k:'BARVNO' }, { e:'🧣', k:'BARVNO' },
+  { e:'👙', k:'OBCUTLJIVO' }, { e:'🩱', k:'OBCUTLJIVO' }, { e:'🧤', k:'OBCUTLJIVO' }, { e:'🥻', k:'OBCUTLJIVO' },
+];
+
+// Imena in obrazi izbire (Šefica zgoraj, Možakar spodaj).
+const BOSS_EMOJI = { 'Lea':'👩‍🦰', 'Ula':'👩' };
+const MAN_EMOJI  = { 'Aljoša':'🧑', 'Samo':'🧔' };
+
+// Smešne slovenske replike po dogodkih.
+const LINES = {
+  ukazi:     ['Belo posebej!','To je na 30 stopinj!','Mehčalca ne pozabi!',
+              'A to je moja majica?!','Loči barve, no!','Hitreje, hitreje!',
+              'Ne meči vsega skupaj!','Kam pa kam s tem?!'],
+  pohvale:   ['No, končno.','Bravo, šampion.','Vidiš, da znaš!','Tako pa že!','Ja! Še!'],
+  napaka:    ['NAROBE!','Spet?!','Ti je sploh mar?!','Au, moja bluza!','Kako pa to?!'],
+  zgreseno:  ['Pobiraj!','Na tleh bo ostalo?!','Saj ni težko!','Zbudi se!'],
+  katastrofa:['VSE JE ROZA!'],
+};
+
+// Glavni objekt stanja.
+const state = {
+  screen:'intro',          // 'intro' | 'play' | 'over'
+  time:0,                  // globalni čas (za animacije sin/cos)
+  score:0, level:1, patience:100,
+  streak:0, mult:1,        // combo niz in množitelj (do x5)
+  spawnT:0, cmdT:0,        // časovnika za spawn in ambientne ukaze
+  shakeT:0, shakeMag:0,    // screen shake
+  flashT:0,                // rožnati blisk (katastrofa)
+  bubble:'', bubbleT:0,    // oblaček Šefice
+  muted:false,
+  win:false,               // ali je presegel prag ob koncu
+};
+
+// Izbira imen (privzeto prvi gumb).
+const sel = { boss:'Lea', man:'Aljoša' };
+
+// Možakar (igralec).
+const player = { x:LW/2, w:96, basketIdx:0, walk:0 };
+
+// Seznami objektov.
+const pieces = [];      // padajoče perilo
+const particles = [];   // delci (iskrice, mehurčki, rožnata katastrofa)
+
+// Konstante igre.
+const PLAYER_SPEED   = 380;          // px/s
+const PLAYER_Y       = 648;          // navpična lega Možakarja
+const CATCH_TOP      = 612;          // pas ujema (vrh)
+const CATCH_BOT      = 666;          // pas ujema (dno)
+const CATCH_HALF     = 52;           // dovoljen vodoravni odmik za ujem
+const SCORE_PER_LEVEL= 120;          // koliko točk na nov nivo
+const WIN_THRESHOLD  = 400;          // prag za "presegel šefico"
+const PATIENCE_MAX   = 100;
+
+// Pravokotniki vmesnika (logične koordinate) — za izris in zaznavo klikov.
+const UI = {
+  mute:   { x:LW-46, y:14,  w:34, h:34 },
+  // uvod
+  lea:    { x:55,  y:275, w:170, h:54 },
+  ula:    { x:255, y:275, w:170, h:54 },
+  aljosa: { x:55,  y:370, w:170, h:54 },
+  samo:   { x:255, y:370, w:170, h:54 },
+  play:   { x:130, y:582, w:220, h:62 },
+  // konec
+  again:  { x:130, y:560, w:220, h:62 },
+  // igra (zaslonski gumbi za dotik)
+  left:   { x:20,  y:LH-95, w:92,  h:76 },
+  right:  { x:122, y:LH-95, w:92,  h:76 },
+  switch: { x:LW-112, y:LH-95, w:92, h:76 },
+};
+
+// Mehurčki v ozadju (lebdijo navzgor in se ovijejo).
+const bgBubbles = Array.from({length:16}, ()=>({
+  x:rand(0,LW), y:rand(0,LH), r:rand(6,18), spd:rand(8,26)
+}));
+
+/* =========================================================================
+   ZVOK — Web Audio API, vse generirano proceduralno (brez datotek).
+   ========================================================================= */
+let AC = null, master = null;
+
+function ensureAudio(){
+  if (AC){ if (AC.state === 'suspended') AC.resume(); return; }
+  try {
+    AC = new (window.AudioContext || window.webkitAudioContext)();
+    master = AC.createGain();
+    master.gain.value = state.muted ? 0 : 0.9;
+    master.connect(AC.destination);
+  } catch(e){ AC = null; }
+}
+function toggleMute(){
+  state.muted = !state.muted;
+  if (master) master.gain.value = state.muted ? 0 : 0.9;
+}
+
+// Osnovni ton z drsenjem frekvence in mehkim ovojem glasnosti.
+function tone(freq, dur, type='sine', vol=0.3, slideTo=null, when=0){
+  if (!AC || state.muted) return;
+  const t0 = AC.currentTime + when;
+  const o = AC.createOscillator(), g = AC.createGain();
+  o.type = type;
+  o.frequency.setValueAtTime(freq, t0);
+  if (slideTo) o.frequency.exponentialRampToValueAtTime(Math.max(1,slideTo), t0+dur);
+  g.gain.setValueAtTime(0.0001, t0);
+  g.gain.exponentialRampToValueAtTime(vol, t0+0.012);
+  g.gain.exponentialRampToValueAtTime(0.0001, t0+dur);
+  o.connect(g); g.connect(master);
+  o.start(t0); o.stop(t0+dur+0.03);
+}
+// Šum (za "tresk" ob padcu na tla).
+function noiseBurst(dur=0.2){
+  if (!AC || state.muted) return;
+  const sr = AC.sampleRate, buf = AC.createBuffer(1, sr*dur, sr);
+  const d = buf.getChannelData(0);
+  for (let i=0;i<d.length;i++) d[i] = (Math.random()*2-1) * (1 - i/d.length);
+  const src = AC.createBufferSource(); src.buffer = buf;
+  const f = AC.createBiquadFilter(); f.type='lowpass'; f.frequency.value=1100;
+  const g = AC.createGain(); g.gain.value=0.45;
+  src.connect(f); f.connect(g); g.connect(master); src.start();
+}
+// Konkretni zvočni učinki.
+const sfxClick   = ()=> tone(820,.05,'square',.12);
+function sfxCorrect(){                                   // vesel "blip", višji ob comboju
+  const base = 500 + Math.min(state.mult,5)*55;
+  tone(base, .09,'square',.2, base*1.35, 0);
+  tone(base*1.5, .11,'square',.17, base*1.9, .08);
+}
+const sfxWrong   = ()=> tone(150,.2,'sawtooth',.26,85);   // nizek "buzz"
+const sfxCrash   = ()=> noiseBurst(.22);                  // tresk
+function sfxJingle(){                                      // naraščajoč jingle ob nivoju
+  const f=[523,659,784,1047];
+  f.forEach((hz,i)=> tone(hz,.13,'triangle',.22, hz*1.02, i*0.09));
+}
+function sfxWah(){                                         // "wah-wah-waaah"
+  tone(440,.18,'sawtooth',.26,360,0);
+  tone(360,.18,'sawtooth',.26,300,.16);
+  tone(300,.5 ,'sawtooth',.30,150,.34);
+}
+
+/* =========================================================================
+   VNOS — tipkovnica + enotni pointer dogodki (miška in dotik).
+   ========================================================================= */
+const input = { kl:false, kr:false, tl:false, tr:false };  // levo/desno iz tipk in dotika
+const goLeft  = ()=> input.kl || input.tl;
+const goRight = ()=> input.kr || input.tr;
+const activePointers = new Map();                          // pointerId -> 'left'|'right'
+
+function setBasket(i){ if (state.screen!=='play') return; player.basketIdx = ((i%3)+3)%3; sfxClick(); }
+function cycleBasket(){ if (state.screen!=='play') return; player.basketIdx = (player.basketIdx+1)%3; sfxClick(); }
+
+window.addEventListener('keydown', e=>{
+  ensureAudio();
+  const k = e.key.toLowerCase();
+  if (k==='arrowleft' || k==='a') input.kl = true;
+  if (k==='arrowright'|| k==='d') input.kr = true;
+  if (k==='1') setBasket(0);
+  if (k==='2') setBasket(1);
+  if (k==='3') setBasket(2);
+  if (k===' ' || k==='spacebar'){ cycleBasket(); }
+  if (k==='enter'){ if (state.screen==='intro') startGame(); else if (state.screen==='over') startGame(); }
+  if (['arrowleft','arrowright',' ','spacebar'].includes(k)) e.preventDefault();
+}, { passive:false });
+
+window.addEventListener('keyup', e=>{
+  const k = e.key.toLowerCase();
+  if (k==='arrowleft' || k==='a') input.kl = false;
+  if (k==='arrowright'|| k==='d') input.kr = false;
+});
+
+canvas.addEventListener('pointerdown', e=>{
+  ensureAudio();
+  const p = toLogical(e.clientX, e.clientY);
+  onPointerDown(p, e.pointerId);
+});
+canvas.addEventListener('pointerup',     e=> onPointerUp(e.pointerId));
+canvas.addEventListener('pointercancel', e=> onPointerUp(e.pointerId));
+canvas.addEventListener('pointerleave',  e=> onPointerUp(e.pointerId));
+
+function onPointerDown(p, id){
+  // Gumb za zvok deluje na vseh zaslonih.
+  if (hit(p, UI.mute)){ toggleMute(); return; }
+
+  if (state.screen==='intro'){
+    if (hit(p, UI.lea))    sel.boss = 'Lea';
+    if (hit(p, UI.ula))    sel.boss = 'Ula';
+    if (hit(p, UI.aljosa)) sel.man  = 'Aljoša';
+    if (hit(p, UI.samo))   sel.man  = 'Samo';
+    if (hit(p, UI.play))   startGame();
+    return;
+  }
+  if (state.screen==='over'){
+    if (hit(p, UI.again)) startGame();
+    return;
+  }
+  // Igra: zaslonski gumbi za dotik.
+  if (hit(p, UI.left)){  input.tl = true; activePointers.set(id,'left');  return; }
+  if (hit(p, UI.right)){ input.tr = true; activePointers.set(id,'right'); return; }
+  if (hit(p, UI.switch)){ cycleBasket(); return; }
+}
+function onPointerUp(id){
+  const role = activePointers.get(id);
+  if (role==='left')  input.tl = false;
+  if (role==='right') input.tr = false;
+  activePointers.delete(id);
+}
+
+/* =========================================================================
+   IGRA — spawn, fizika, trki, točkovanje, potrpljenje, stopnjevanje.
+   ========================================================================= */
+
+function setBubble(text, dur=2.4){ state.bubble = text; state.bubbleT = dur; }
+
+function startGame(){
+  ensureAudio();
+  state.screen='play';
+  state.score=0; state.level=1; state.patience=PATIENCE_MAX;
+  state.streak=0; state.mult=1;
+  state.spawnT=0.8; state.cmdT=3; state.bubbleT=0;
+  state.shakeT=0; state.flashT=0; state.win=false;
+  pieces.length=0; particles.length=0;
+  player.x=LW/2; player.basketIdx=0; player.walk=0;
+  input.kl=input.kr=input.tl=input.tr=false;
+  setBubble('Začnimo! Sortiraj!', 2);
+}
+
+// Interval med spawni (krajši z nivojem) in hitrost padanja (večja z nivojem).
+const spawnInterval = ()=> Math.max(0.45, 1.25 - (state.level-1)*0.12);
+function fallSpeed(){ return (120 + (state.level-1)*26) * rand(0.85,1.25); }
+
+function spawnPiece(){
+  // Z verjetnostjo, ki raste z nivojem, spawnamo PAST: rdečo nogavico.
+  const pRed = Math.min(0.2, 0.08 + state.level*0.012);
+  let item;
+  if (Math.random() < pRed){
+    // Izgleda kot navadna nogavica, a je BARVNA in nosi rdeč sij (namig).
+    item = { e:'🧦', k:'BARVNO', redSock:true };
+  } else {
+    item = pick(PERILO);
+  }
+  pieces.push({
+    x: rand(46, LW-46), y: -30,
+    vy: fallSpeed(),
+    rot: rand(-0.3,0.3), rotSpeed: rand(-1.6,1.6),
+    e: item.e, k: item.k, redSock: !!item.redSock,
+    done:false,
+  });
+}
+
+// Ujem v koš: pravilno / napačno / (posebej) rožnata katastrofa.
+function resolveCatch(p){
+  const basket = BASKETS[player.basketIdx];
+  if (basket === p.k){
+    // PRAVILNO
+    state.streak++;
+    const newMult = Math.min(5, 1 + Math.floor(state.streak/3));
+    if (newMult > state.mult){ state.mult = newMult; setBubble(pick(LINES.pohvale)); }
+    state.score += 10 * state.mult;
+    state.patience = clamp(state.patience + 4, 0, PATIENCE_MAX);
+    sfxCorrect();
+    spawnSparkles(p.x, p.y, KAT[p.k].glow);
+  } else if (p.redSock && basket === 'BELO'){
+    catastrophe(p);
+  } else {
+    wrongPlace();
+  }
+}
+function wrongPlace(){
+  state.streak=0; state.mult=1;
+  state.patience = clamp(state.patience - 14, 0, PATIENCE_MAX);
+  state.shakeT=0.3; state.shakeMag=10;
+  sfxWrong(); setBubble(pick(LINES.napaka));
+}
+function catastrophe(p){
+  state.streak=0; state.mult=1;
+  state.patience = clamp(state.patience - 35, 0, PATIENCE_MAX);
+  state.shakeT=0.5; state.shakeMag=18;
+  state.flashT=0.8;
+  sfxWah(); setBubble('VSE JE ROZA!', 2.6);
+  spawnHearts(p.x, p.y);
+}
+function missPiece(p){
+  // Zgrešeno (padlo na tla): potrpljenje pade, combo ostane (po pravilih).
+  state.patience = clamp(state.patience - 8, 0, PATIENCE_MAX);
+  state.shakeT=0.2; state.shakeMag=7;
+  sfxCrash(); setBubble(pick(LINES.zgreseno));
+  spawnPuff(p.x, PLAYER_Y+70);
+}
+function onLevelUp(){
+  sfxJingle();
+  setBubble('NIVO '+state.level+'! Hitreje!', 2);
+}
+function endGame(){
+  state.screen='over';
+  state.win = state.score >= WIN_THRESHOLD;
+}
+
+/* ---- Delci -------------------------------------------------------------- */
+function spawnSparkles(x,y,color){
+  for (let i=0;i<12;i++) particles.push({
+    x,y, vx:rand(-90,90), vy:rand(-150,-30), g:140,
+    life:rand(.4,.8), max:.8, r:rand(2,5), color, kind:'dot'
+  });
+}
+function spawnHearts(x,y){
+  for (let i=0;i<18;i++) particles.push({
+    x,y, vx:rand(-130,130), vy:rand(-200,-40), g:120,
+    life:rand(.7,1.2), max:1.2, e:'💗', kind:'emoji', size:rand(16,30)
+  });
+}
+function spawnPuff(x,y){
+  for (let i=0;i<8;i++) particles.push({
+    x,y, vx:rand(-70,70), vy:rand(-60,-10), g:60,
+    life:rand(.3,.6), max:.6, r:rand(4,9), color:'#cfd6e6', kind:'dot'
+  });
+}
+function updateParticles(dt){
+  for (let i=particles.length-1;i>=0;i--){
+    const q=particles[i];
+    q.vy += (q.g||0)*dt;
+    q.x += q.vx*dt; q.y += q.vy*dt; q.life -= dt;
+    if (q.life<=0) particles.splice(i,1);
+  }
+}
+
+/* ---- Posodobitev sveta -------------------------------------------------- */
+function update(dt){
+  state.time += dt;
+
+  // Ozadje, delci in časovniki tečejo vedno.
+  for (const b of bgBubbles){ b.y -= b.spd*dt; if (b.y < -20){ b.y = LH+20; b.x = rand(0,LW); } }
+  updateParticles(dt);
+  if (state.shakeT>0) state.shakeT -= dt;
+  if (state.flashT>0) state.flashT -= dt;
+  if (state.bubbleT>0) state.bubbleT -= dt;
+
+  if (state.screen!=='play') return;
+
+  // Gibanje Možakarja + rahel "bob".
+  const dir = (goLeft()?-1:0) + (goRight()?1:0);
+  player.x = clamp(player.x + dir*PLAYER_SPEED*dt, player.w/2, LW-player.w/2);
+  if (dir!==0) player.walk += dt*11; else player.walk *= 0.9;
+
+  // Spawn perila.
+  state.spawnT -= dt;
+  if (state.spawnT<=0){ spawnPiece(); state.spawnT = spawnInterval(); }
+
+  // Ambientni "nagajivi ukazi", ko ni aktivnega dogodka v oblačku.
+  state.cmdT -= dt;
+  if (state.cmdT<=0 && state.bubbleT<=0){ setBubble(pick(LINES.ukazi)); state.cmdT = rand(4,7); }
+
+  // Perilo: fizika + trki.
+  for (let i=pieces.length-1;i>=0;i--){
+    const p=pieces[i];
+    p.y += p.vy*dt;
+    p.rot += p.rotSpeed*dt;
+
+    // Ujem velja le v pasu ujema IN ob vodoravnem ujemanju z Možakarjem.
+    if (!p.done && p.y>=CATCH_TOP && p.y<=CATCH_BOT && Math.abs(p.x-player.x)<=CATCH_HALF){
+      resolveCatch(p); pieces.splice(i,1); continue;
+    }
+    // Padlo mimo koša -> zgrešeno.
+    if (p.y > CATCH_BOT+10){ missPiece(p); pieces.splice(i,1); continue; }
+  }
+
+  // Stopnjevanje težavnosti.
+  const nl = 1 + Math.floor(state.score / SCORE_PER_LEVEL);
+  if (nl > state.level){ state.level = nl; onLevelUp(); }
+
+  // Konec, ko zmanjka potrpljenja.
+  if (state.patience <= 0) endGame();
+}
+
+/* =========================================================================
+   IZRIS — vse z emoji in preprosto geometrijo na platnu.
+   ========================================================================= */
+
+// Obraza glede na potrpljenje (Šefica) in stres (Možakar).
+function bossFace(){
+  if (state.patience < 25) return '😡';
+  if (state.patience < 55) return '😠';
+  return BOSS_EMOJI[sel.boss];
+}
+function manFace(){ return state.patience < 30 ? '😰' : MAN_EMOJI[sel.man]; }
+
+// Pomočniki za risanje.
+function roundRect(x,y,w,h,r){
+  ctx.beginPath();
+  ctx.moveTo(x+r,y);
+  ctx.arcTo(x+w,y,x+w,y+h,r);
+  ctx.arcTo(x+w,y+h,x,y+h,r);
+  ctx.arcTo(x,y+h,x,y,r);
+  ctx.arcTo(x,y,x+w,y,r);
+  ctx.closePath();
+}
+function text(t,x,y,size,color,align='center',weight='bold'){
+  ctx.font = weight+' '+size+'px system-ui, sans-serif';
+  ctx.textAlign = align; ctx.textBaseline = 'middle';
+  ctx.fillStyle = color; ctx.fillText(t,x,y);
+}
+function strokedText(t,x,y,size,color,stroke='#0b1020',sw=4){
+  ctx.font = 'bold '+size+'px system-ui, sans-serif';
+  ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.lineWidth=sw; ctx.strokeStyle=stroke; ctx.strokeText(t,x,y);
+  ctx.fillStyle=color; ctx.fillText(t,x,y);
+}
+function emoji(e,x,y,size,glow=null){
+  ctx.font = size+'px system-ui, sans-serif';
+  ctx.textAlign='center'; ctx.textBaseline='middle';
+  if (glow){ ctx.save(); ctx.shadowColor=glow; ctx.shadowBlur=18; }
+  ctx.fillText(e,x,y);
+  if (glow) ctx.restore();
+}
+function wrap(t,x,y,size,color,maxW,lh){
+  ctx.font='bold '+size+'px system-ui, sans-serif';
+  ctx.textAlign='center'; ctx.textBaseline='middle';
+  const words=t.split(' '); let line=''; const lines=[];
+  for (const w of words){
+    const test=line?line+' '+w:w;
+    if (ctx.measureText(test).width>maxW && line){ lines.push(line); line=w; }
+    else line=test;
+  }
+  if (line) lines.push(line);
+  ctx.fillStyle=color;
+  lines.forEach((ln,i)=> ctx.fillText(ln, x, y + i*lh - (lines.length-1)*lh/2));
+}
+
+function drawBackground(){
+  // Pralniško ozadje: navpičen preliv + nežna mreža ploščic + mehurčki.
+  const g = ctx.createLinearGradient(0,0,0,LH);
+  g.addColorStop(0,'#10172e'); g.addColorStop(1,'#1b2550');
+  ctx.fillStyle=g; ctx.fillRect(0,0,LW,LH);
+  ctx.strokeStyle='rgba(255,255,255,0.04)'; ctx.lineWidth=1;
+  for (let x=0;x<=LW;x+=48){ ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,LH); ctx.stroke(); }
+  for (let y=0;y<=LH;y+=48){ ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(LW,y); ctx.stroke(); }
+  ctx.fillStyle='rgba(255,255,255,0.06)';
+  for (const b of bgBubbles){ ctx.beginPath(); ctx.arc(b.x,b.y,b.r,0,Math.PI*2); ctx.fill(); }
+}
+
+function drawButton(r, label, opts={}){
+  const { active=false, color='#2a3566' } = opts;
+  ctx.save();
+  if (active){ ctx.shadowColor='#ffd23f'; ctx.shadowBlur=22; }
+  ctx.fillStyle = active ? '#3a4a8a' : color;
+  roundRect(r.x,r.y,r.w,r.h,14); ctx.fill();
+  ctx.lineWidth = active ? 3 : 2;
+  ctx.strokeStyle = active ? '#ffd23f' : 'rgba(255,255,255,0.25)';
+  roundRect(r.x,r.y,r.w,r.h,14); ctx.stroke();
+  ctx.restore();
+  text(label, r.x+r.w/2, r.y+r.h/2, Math.min(24, r.h*0.42), active?'#fff':'#dfe6ff');
+}
+
+function drawMute(){
+  ctx.save();
+  ctx.fillStyle='rgba(0,0,0,0.25)';
+  roundRect(UI.mute.x,UI.mute.y,UI.mute.w,UI.mute.h,8); ctx.fill();
+  ctx.restore();
+  emoji(state.muted?'🔇':'🔊', UI.mute.x+UI.mute.w/2, UI.mute.y+UI.mute.h/2+1, 22);
+}
+
+/* ---- UVODNI ZASLON ------------------------------------------------------ */
+function drawIntro(){
+  drawBackground();
+  strokedText('PERILO POD', LW/2, 78, 40, '#ffd23f');
+  strokedText('NADZOROM', LW/2, 120, 40, '#ffd23f');
+  text('Lovi padajoče perilo v PRAVI koš.', LW/2, 168, 17, '#cfe0ff');
+  text('Ujem velja le, če si na mestu IN imaš odprt pravi koš.', LW/2, 192, 13.5, '#9fb2e6');
+  text('← → / A D za hojo · 1·2·3 ali ⎵ za menjavo koša', LW/2, 214, 13.5, '#9fb2e6');
+
+  // Izbira Šefice.
+  text('IZBERI ŠEFICO', LW/2, 256, 16, '#ffb3c7');
+  drawButton(UI.lea, '👩‍🦰 Lea', { active: sel.boss==='Lea' });
+  drawButton(UI.ula, '👩 Ula',  { active: sel.boss==='Ula' });
+  // Izbira Možakarja.
+  text('IZBERI MOŽAKARJA', LW/2, 351, 16, '#a9e6c0');
+  drawButton(UI.aljosa, '🧑 Aljoša', { active: sel.man==='Aljoša' });
+  drawButton(UI.samo,   '🧔 Samo',   { active: sel.man==='Samo' });
+
+  // Legenda treh kategorij (barva koša = barva siju perila).
+  text('KOŠI', LW/2, 448, 15, '#cfe0ff');
+  const chips = [
+    { r:{x:15, y:462, w:140, h:74}, k:'BELO',       ex:'👕' },
+    { r:{x:170,y:462, w:140, h:74}, k:'BARVNO',     ex:'👗' },
+    { r:{x:325,y:462, w:140, h:74}, k:'OBCUTLJIVO', ex:'👙' },
+  ];
+  for (const c of chips){
+    const K=KAT[c.k];
+    ctx.fillStyle='rgba(255,255,255,0.06)'; roundRect(c.r.x,c.r.y,c.r.w,c.r.h,12); ctx.fill();
+    ctx.lineWidth=3; ctx.strokeStyle=K.barva; roundRect(c.r.x,c.r.y,c.r.w,c.r.h,12); ctx.stroke();
+    emoji(c.ex, c.r.x+c.r.w/2, c.r.y+30, 30, K.glow);
+    text(K.ime, c.r.x+c.r.w/2, c.r.y+58, 15, K.barva);
+  }
+
+  drawButton(UI.play, '▶  IGRAJ', { active:true });
+  drawMute();
+}
+
+/* ---- IGRALNI ZASLON ----------------------------------------------------- */
+function drawHUD(){
+  // Šefica zgoraj levo + oblaček.
+  emoji(bossFace(), 42, 52, 50);
+  if (state.bubbleT>0 && state.bubble){
+    const bw = Math.min(300, 40 + ctx.measureText(state.bubble).width*0.0 + state.bubble.length*9.2);
+    const bx = 78, by = 30, bh = 40;
+    ctx.fillStyle='#fff'; roundRect(bx,by,bw,bh,12); ctx.fill();
+    ctx.beginPath(); ctx.moveTo(bx,by+24); ctx.lineTo(bx-12,by+20); ctx.lineTo(bx,by+12); ctx.fill();
+    text(state.bubble, bx+bw/2, by+bh/2, 15, '#1b2550');
+  }
+
+  // Vrstica potrpljenja.
+  const px=15, py=92, pw=LW-30, ph=18;
+  text('POTRPLJENJE ('+sel.boss+')', px+2, py-12, 13, '#cfe0ff', 'left');
+  ctx.fillStyle='rgba(0,0,0,0.3)'; roundRect(px,py,pw,ph,9); ctx.fill();
+  const frac = state.patience/PATIENCE_MAX;
+  const col = frac>0.5 ? '#5ad17a' : frac>0.25 ? '#ffd23f' : '#ff5a5a';
+  ctx.fillStyle=col; roundRect(px,py,Math.max(0,pw*frac),ph,9); ctx.fill();
+
+  // Statistika.
+  text('TOČKE: '+state.score, px+2, 130, 16, '#fff', 'left');
+  text('NIVO: '+state.level, LW/2, 130, 16, '#cfe0ff', 'center');
+  text('COMBO x'+state.mult, LW-17, 130, 16, state.mult>1?'#ffd23f':'#9fb2e6', 'right');
+}
+
+function drawPlayer(){
+  const bob = (goLeft()||goRight()) ? Math.sin(player.walk)*3 : 0;
+  const K = KAT[BASKETS[player.basketIdx]];
+
+  // Glow okoli koša glede na kategorijo.
+  ctx.save();
+  ctx.shadowColor=K.glow; ctx.shadowBlur=24;
+  ctx.fillStyle=K.barva;
+  roundRect(player.x-player.w/2, PLAYER_Y-6, player.w, 56, 12); ctx.fill();
+  ctx.restore();
+  // Notranjost koša + ime kategorije.
+  ctx.fillStyle='rgba(0,0,0,0.18)';
+  roundRect(player.x-player.w/2+6, PLAYER_Y, player.w-12, 22, 8); ctx.fill();
+  text(K.ime, player.x, PLAYER_Y+25, 15, '#1b2550');
+
+  // Možakar nad košem (+ panika/znoj pri nizkem potrpljenju).
+  emoji(manFace(), player.x, PLAYER_Y-34+bob, 46);
+  if (state.patience<30){
+    emoji('💦', player.x-22, PLAYER_Y-44+bob, 18);
+    emoji('💦', player.x+22, PLAYER_Y-40+bob, 16);
+  }
+}
+
+function drawPieces(){
+  for (const p of pieces){
+    ctx.save();
+    ctx.translate(p.x,p.y); ctx.rotate(p.rot);
+    // Rdeča nogavica nosi rdeč sij (namig za past), sicer barva kategorije.
+    const glow = p.redSock ? '#ff4d4d' : KAT[p.k].glow;
+    emoji(p.e, 0, 0, 36, glow);
+    ctx.restore();
+  }
+}
+
+function drawParticles(){
+  for (const q of particles){
+    const a = clamp(q.life/q.max, 0, 1);
+    ctx.globalAlpha = a;
+    if (q.kind==='emoji'){ emoji(q.e, q.x, q.y, q.size); }
+    else { ctx.fillStyle=q.color; ctx.beginPath(); ctx.arc(q.x,q.y,q.r,0,Math.PI*2); ctx.fill(); }
+    ctx.globalAlpha = 1;
+  }
+}
+
+function drawTouchControls(){
+  // Polprosojni zaslonski gumbi (uporabni na dotik; tipkovnica deluje vzporedno).
+  const btn = (r,label)=>{
+    ctx.fillStyle='rgba(255,255,255,0.10)'; roundRect(r.x,r.y,r.w,r.h,14); ctx.fill();
+    ctx.lineWidth=2; ctx.strokeStyle='rgba(255,255,255,0.2)'; roundRect(r.x,r.y,r.w,r.h,14); ctx.stroke();
+    emoji(label, r.x+r.w/2, r.y+r.h/2, 30);
+  };
+  btn(UI.left,'◀'); btn(UI.right,'▶'); btn(UI.switch,'🔄');
+}
+
+function drawPlay(){
+  drawBackground();
+  drawPieces();
+  drawPlayer();
+  drawParticles();
+  drawTouchControls();
+  drawHUD();
+  drawMute();
+}
+
+/* ---- KONČNI ZASLON ------------------------------------------------------ */
+function drawOver(){
+  drawBackground();
+  drawParticles();
+  if (state.win){
+    strokedText('PRESEGEL ŠEFICO! 🏆', LW/2, 180, 30, '#ffd23f');
+    emoji('🎉', LW/2, 250, 60);
+    wrap(sel.man+' je ukrotil perilo in končno utišal šefico '+sel.boss+'! Legenda pralnice.',
+         LW/2, 350, 19, '#dfe6ff', LW-70, 28);
+  } else {
+    strokedText('KONEC IGRE', LW/2, 175, 34, '#ff6f6f');
+    emoji('😡', LW/2, 245, 60);
+    wrap('Šefica '+sel.boss+': "Dovolj, '+sel.man+'! Pojdi raje pomivat posodo — perilo bom raje sama!"',
+         LW/2, 350, 19, '#ffd0d0', LW-70, 28);
+  }
+  text('Tvoje točke: '+state.score, LW/2, 460, 22, '#fff');
+  text('Najvišji nivo: '+state.level, LW/2, 492, 16, '#9fb2e6');
+  drawButton(UI.again, '🔁  ŠE ENKRAT', { active:true });
+  drawMute();
+}
+
+/* ---- Glavni izris z view-transformom in screen shake -------------------- */
+function render(){
+  // Počisti in pobarvaj robove (letterbox).
+  ctx.setTransform(view.dpr,0,0,view.dpr,0,0);
+  ctx.fillStyle='#0b1020';
+  ctx.fillRect(0,0,view.vw,view.vh);
+
+  // Screen shake (v logičnih enotah).
+  let sx=0, sy=0;
+  if (state.shakeT>0){ sx = rand(-1,1)*state.shakeMag; sy = rand(-1,1)*state.shakeMag; }
+
+  ctx.save();
+  ctx.translate(view.ox + sx*view.scale, view.oy + sy*view.scale);
+  ctx.scale(view.scale, view.scale);
+  ctx.beginPath(); ctx.rect(0,0,LW,LH); ctx.clip();
+
+  if (state.screen==='intro') drawIntro();
+  else if (state.screen==='play') drawPlay();
+  else drawOver();
+
+  // Rožnati blisk čez zaslon ob katastrofi.
+  if (state.flashT>0){
+    ctx.fillStyle = 'rgba(255,95,174,'+(0.55*(state.flashT/0.8))+')';
+    ctx.fillRect(0,0,LW,LH);
+  }
+  ctx.restore();
+}
+
+/* =========================================================================
+   ZANKA — requestAnimationFrame z delta-time (neodvisno od naprave).
+   ========================================================================= */
+let last = 0;
+function loop(ts){
+  if (!last) last = ts;
+  let dt = (ts - last) / 1000;
+  last = ts;
+  if (dt > 0.05) dt = 0.05;     // clamp ob lagih, da fizika ostane stabilna
+  update(dt);
+  render();
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
