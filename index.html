@@ -679,10 +679,11 @@ function drawOver(){
     wrap(sel.man+' je ukrotil perilo in končno utišal šefico '+sel.boss+'! Legenda pralnice.',
          LW/2, 350, 19, '#dfe6ff', LW-70, 28);
   } else {
-    strokedText('KONEC IGRE', LW/2, 175, 34, '#ff6f6f');
-    emoji('😡', LW/2, 245, 60);
+    strokedText('KONEC IGRE', LW/2, 165, 34, '#ff6f6f');
+    emoji('😡', LW/2, 232, 58);
+    strokedText('TI SI PA RES INVALID! 🙄', LW/2, 300, 24, '#ffd23f');
     wrap('Šefica '+sel.boss+': "Dovolj, '+sel.man+'! Pojdi raje pomivat posodo — perilo bom raje sama!"',
-         LW/2, 350, 19, '#ffd0d0', LW-70, 28);
+         LW/2, 370, 18, '#ffd0d0', LW-70, 26);
   }
   text('Tvoje točke: '+state.score, LW/2, 460, 22, '#fff');
   text('Najvišji nivo: '+state.level, LW/2, 492, 16, '#9fb2e6');
