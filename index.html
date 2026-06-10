@@ -626,15 +626,18 @@ function drawPieces(){
     ctx.save();
     ctx.translate(p.x,p.y); ctx.rotate(p.rot);
     // Barvna podlaga z debelim obročem jasno pokaže, kam kos spada.
-    ctx.shadowColor = glowCol; ctx.shadowBlur = 16;
+    ctx.shadowColor = glowCol; ctx.shadowBlur = 20;
     ctx.fillStyle = ringCol;
-    ctx.beginPath(); ctx.arc(0,0,25,0,Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.arc(0,0,29,0,Math.PI*2); ctx.fill();
     ctx.shadowBlur = 0;
-    // Svetla sredina za kontrast, da je emoji dobro viden.
-    ctx.fillStyle = '#f4f8ff';
-    ctx.beginPath(); ctx.arc(0,0,19,0,Math.PI*2); ctx.fill();
-    // Emoji perila na vrhu.
-    emoji(p.e, 0, 1, 30);
+    // Temna obroba loči kos od ozadja.
+    ctx.lineWidth = 2; ctx.strokeStyle = 'rgba(11,16,32,0.55)';
+    ctx.beginPath(); ctx.arc(0,0,29,0,Math.PI*2); ctx.stroke();
+    // Bela sredina za močan kontrast, da je perilo jasno vidno.
+    ctx.fillStyle = '#ffffff';
+    ctx.beginPath(); ctx.arc(0,0,22,0,Math.PI*2); ctx.fill();
+    // Emoji perila na vrhu (večji za boljšo vidljivost).
+    emoji(p.e, 0, 1, 36);
     ctx.restore();
   }
 }
@@ -681,7 +684,7 @@ function drawOver(){
   } else {
     strokedText('KONEC IGRE', LW/2, 165, 34, '#ff6f6f');
     emoji('😡', LW/2, 232, 58);
-    strokedText('TI SI PA RES INVALID! 🙄', LW/2, 300, 24, '#ffd23f');
+    strokedText('TI SI NESPOSOBEN! 🙄', LW/2, 300, 26, '#ffd23f');
     wrap('Šefica '+sel.boss+': "Dovolj, '+sel.man+'! Pojdi raje pomivat posodo — perilo bom raje sama!"',
          LW/2, 370, 18, '#ffd0d0', LW-70, 26);
   }
