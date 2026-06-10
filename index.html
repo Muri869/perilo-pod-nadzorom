@@ -137,10 +137,11 @@ const UI = {
   play:   { x:130, y:582, w:220, h:62 },
   // konec
   again:  { x:130, y:560, w:220, h:62 },
-  // igra (zaslonski gumbi za dotik)
-  left:   { x:20,  y:LH-95, w:92,  h:76 },
-  right:  { x:122, y:LH-95, w:92,  h:76 },
-  switch: { x:LW-112, y:LH-95, w:92, h:76 },
+  // igra (zaslonski gumbi za dotik): levo skrajno levo, desno skrajno desno,
+  // menjava koša na sredini.
+  left:   { x:20,         y:LH-95, w:92, h:76 },
+  switch: { x:(LW-92)/2,  y:LH-95, w:92, h:76 },
+  right:  { x:LW-112,     y:LH-95, w:92, h:76 },
 };
 
 // Mehurčki v ozadju (lebdijo navzgor in se ovijejo).
