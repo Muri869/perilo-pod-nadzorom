@@ -1,0 +1,7 @@
+# Lokalne nastavitve orodij (ne sodijo v repozitorij)
+.claude/
+.DS_Store
+
+# Urejevalniki
+.vscode/
+.idea/
