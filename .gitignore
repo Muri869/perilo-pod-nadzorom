@@ -5,3 +5,20 @@
 # Urejevalniki
 .vscode/
 .idea/
+
+.env
+.env.*
+!.env.example
+# Skrivnosti in izvozi (enotno pravilo, 2. 9. 2026)
+*.pem
+*.key
+*.p12
+*.sql
+*.sql.gz
+*.zip
+*.bak
+credentials*.json
+token.json
+service-account*.json
+.playwright-mcp*/
+.impeccable/
